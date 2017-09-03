@@ -9,8 +9,17 @@
 #include <HT16K33.h>
 #include <DS1631.h>
 #include <SeqButton.h>
+#include <IRremote.h>
+#include <IRremoteInt.h>
+
+/*------IR----------*/
+int RECV_PIN = 53;
+IRrecv irrecv(RECV_PIN);
+decode_results IRresults;
+/************************/
 
 Adafruit_7segment display = Adafruit_7segment(); //Instantiation of an Display object
+
 /********** Adresses des composants I2C **********/
 #define Def_I2C_Adr_SevenSeg			0x70          // I2C bus address of seven seg display
 #define Def_I2C_Adr_DS1307				0x68          //I2C RTC address
@@ -22,7 +31,7 @@ Adafruit_7segment display = Adafruit_7segment(); //Instantiation of an Display o
 SemaphoreHandle_t xSerialSemaphore;
 SemaphoreHandle_t xI2cSemaphore;
 
-// Define all Tasks
+//        Define all Tasks
 void TaskDigitalRead (void *pvParameters );
 void TaskAnalogRead (void *pvParameters );
 void TaskBlink (void *pvParameters );
@@ -31,8 +40,9 @@ void TaskDisplay (void *pvParameters);
 void TaskRTC (void *pvParameters);
 void TaskTempSensor (void *pvParameters);
 
-//Define Task handle if necessarry
+//   Define Task handle if necessarry
 TaskHandle_t TaskDisplay_handle;
+TaskHandle_t TaskLightControl_handle;
 
 #define DS1307_I2C_ADDRESS 0x68  // Define the I²C address of the RTC module
 
@@ -118,6 +128,11 @@ void setup() {
   // initialize the button with callback on push (no repeat)
   TempButton.init(31, &setTempBut,&relTempbut);
 
+  // ----   IR initialization     ----//
+  irrecv.enableIRIn(); // Start the receiver
+  //------------------------------------------
+
+
   while (!Serial) {
     ; // wait for serial port to connect. Needed for native USB, on LEONARDO, MICRO, YUN, and other 32u4 based boards.
   }
@@ -176,7 +191,7 @@ void setup() {
       ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
       ,  NULL
       ,  5  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-      ,  NULL );
+      ,  &TaskLightControl_handle );
 
       // Now set up two tasks to run independently.
     xTaskCreate(
@@ -204,7 +219,6 @@ void setup() {
       ,  NULL
       ,  3  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
       ,  NULL );
-
   // Now the Task scheduler, which takes over control of scheduling individual Tasks, is automatically started.
 }
 
@@ -256,6 +270,35 @@ void TaskDigitalRead( void *pvParameters __attribute__((unused)) )  // This is a
         Serial.println(Boitier.temp);
       }
 
+      if (irrecv.decode(&IRresults)){
+        Serial.print("Remote CMD : ");
+				Serial.println(IRresults.value, HEX);
+				irrecv.resume(); // Receive the next value
+
+          switch (IRresults.value) {
+            case 0xE0E040BF: // ON/off
+            OCR4A=0;
+            vTaskSuspend(TaskLightControl_handle);
+                  Serial.println("**Remote ON/OFF");
+            break;
+            case 0xE0E0E01F: //Volume+
+                Serial.println("**Remote volmue+");
+              OCR4A+=2500;
+            break;
+            case 0xE0E0E02F: //volume-
+              Serial.println("**Remote volmue-");
+              OCR4A-=2500;
+            break;
+
+            case 0xE0E0807F: // source d'entrée
+              Serial.println("**Remote resume Light");
+              vTaskResume(TaskLightControl_handle);
+            break;
+
+            default: break;
+          }
+      }
+
       xSemaphoreGive( xSerialSemaphore ); // Now free or "Give" the Serial Port for others.
     }
 
@@ -304,7 +347,7 @@ void TaskLightControl(void *pvParameters)  // This is a task.
 
   while (1) // A Task shall never return or exit.
   {
-      int scale=map(sensorValue, 0, 1023, 0, 65535);
+      int scale=map(sensorValue, 0, 1023, 65535, 0 );
       //int scale=map(sensorValue, 0, 1023, 0, 255);
     // See if we can obtain or "Take" the Serial Semaphore.
     // If the semaphore is not available, wait 5 ticks of the Scheduler to see if it becomes free.
@@ -411,7 +454,7 @@ static bool dot=false;
 }
 
 /*--------------------------------------------------*/
-/*-----       Temperature Task  15 sec ---------------*/
+/*-----       Temperature Task  15 sec -------------*/
 /*--------------------------------------------------*/
 void TaskTempSensor(void *pvParameters)  // This is a task.
 {
